@@ -2,14 +2,12 @@
 from mylla.llama_chat import *
 
 def main():
-    chat = LlamaChat(ChatConfig(prompt_fn='chat-with-bob.txt', llama_cfg=LlamaConfig(model='13b')))
-    chat2 = LlamaChat(ChatConfig(prompt_fn='chat-with-bob2.txt', llama_cfg=LlamaConfig(model='13b')))
-
-    chat2.load_state()
-    if chat2.process_input() > 0: chat2.save_state()
-
-    chat.load_state()
-    if chat.process_input() > 0: chat.save_state()
+    chat = ParallelChat(ParallelChatConfig(
+        main = ChatConfig(prompt_fn='chat-with-bob.txt', llama_cfg=LlamaConfig(model='7b')),
+        others = [
+            PartConfig(w=0.5, cfg=ChatConfig(prompt_fn='chat-with-bob2.txt', llama_cfg=LlamaConfig(model='7b')))
+        ]
+    ))
 
     n_gen = 128
 
@@ -30,20 +28,25 @@ def main():
                 txt = input()
                 if len(txt) > 0:
                     txt += "\n"
-                    tkns = chat.llama.tokenize(' ' + txt)
+                    tkns = chat.main.llama.tokenize(' ' + txt)
                     for i in range(1, tkns.n):
                         token = tkns.tokens[i]
-                        chat.insert_token(token)
-                        chat2.insert_token(token)
-                    chat.process_input(echo=False)
-                    chat2.process_input(echo=False)
+                        chat.main.insert_token(token)
+                        for other in chat.others:
+                            other.insert_token(token)
+                    chat.main.process_input(echo=False)
+                    for other in chat.others:
+                        other.process_input(echo=False)
                 is_interacting = False
             else:
-                chat.patch_logits(chat2, 0.5)
-                token = chat.sample(ignore=["\\"])
-                chat2.insert_token(token)
-            chat.process_input()
-            chat2.process_input(echo=False)
+                for cfg,other in zip(chat.cfg.others, chat.others):
+                    chat.main.patch_logits(other, cfg.w, cfg.op)
+                token = chat.main.sample(ignore=["\\"])
+                for other in chat.others:
+                    other.insert_token(token)
+            chat.main.process_input()
+            for other in chat.others:
+                other.process_input(echo=False)
 
 
 if __name__ == "__main__": main()

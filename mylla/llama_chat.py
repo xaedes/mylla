@@ -358,13 +358,14 @@ class LlamaChat:
             n_processed += self.process_tokens()
         return n_processed
 
-    def patch_logits(self, other, gain = 0.5):
+    def patch_logits(self, other, gain = 0.5, combinator=None):
+        if combinator is None: combinator = lambda x,y: y
         n_vocab = llama.llama_n_vocab(self.llama.ctx)
         my_logits = llama.llama_get_logits(self.llama.ctx) # POINTER(c_float)
         other_logits = llama.llama_get_logits(other.llama.ctx) # POINTER(c_float)
         rgain = 1-gain
         for k in range(n_vocab):
-            my_logits[k] = (my_logits[k] * rgain + gain * other_logits[k])
+            my_logits[k] = (my_logits[k] * rgain + gain * combinator(my_logits[k], other_logits[k]))
             # my_logits[k] = (my_logits[k] * rgain + gain * max(my_logits[k], other_logits[k]))
             # my_logits[k] = other_logits[k]
 
@@ -436,3 +437,29 @@ class LlamaChat:
         return fn
 
 
+@dataclass
+class PartConfig:
+    cfg: ChatConfig
+    w: float
+    op: callable = None
+
+@dataclass
+class ParallelChatConfig:
+    main: ChatConfig
+    others: [PartConfig]
+
+class ParallelChat:
+    def __init__(self, cfg:ParallelChatConfig):
+        self.cfg = cfg
+        self.main = LlamaChat(self.cfg.main)
+        self.others = [
+            LlamaChat(part.cfg) for part in self.cfg.others
+        ]
+
+        for other in self.others:
+            other.load_state()
+            if other.process_input() > 0: other.save_state()
+            print("-")
+
+        self.main.load_state()
+        if self.main.process_input() > 0: self.main.save_state()
