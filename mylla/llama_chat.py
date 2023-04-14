@@ -7,8 +7,11 @@ import signal
 import io
 import time
 import hashlib
+import json
 import numpy as np
+from typing import List
 from dataclasses import dataclass
+from dataclasses import asdict
 
 mylla_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -438,28 +441,57 @@ class LlamaChat:
 
 
 @dataclass
-class PartConfig:
-    cfg: ChatConfig
-    w: float
-    op: callable = None
+class PatchConfig:
+    # represents chats[a].patch_logits(chats[b], w, op)
+    op: str = ''
+    w: float = 0.5
+    a: int = 0
+    b: int = -1
 
 @dataclass
 class ParallelChatConfig:
-    main: ChatConfig
-    others: [PartConfig]
+    chats: List[ChatConfig]
+    patch: List[PatchConfig]
+    main: int = 0 # index of chat to sample from
 
 class ParallelChat:
-    def __init__(self, cfg:ParallelChatConfig):
+    def __init__(self, cfg:ParallelChatConfig, ops:dict=None):
+        self.ops = ops if ops is not None else {}
         self.cfg = cfg
-        self.main = LlamaChat(self.cfg.main)
-        self.others = [
-            LlamaChat(part.cfg) for part in self.cfg.others
-        ]
-
-        for other in self.others:
-            other.load_state()
-            if other.process_input() > 0: other.save_state()
+        self.chats = [LlamaChat(cfg) for cfg in self.cfg.chats]
+        
+    def init_from_saved(self):
+        for k, chat in enumerate(self.chats):
+            if k == self.cfg.main: continue # do main last
+            chat.load_state()
+            if chat.process_input() > 0: chat.save_state()
             print("-")
 
-        self.main.load_state()
-        if self.main.process_input() > 0: self.main.save_state()
+        self.get_main().load_state()
+        if self.get_main().process_input() > 0: self.get_main().save_state()
+    
+    def get_main(self): return self.chats[self.cfg.main]
+
+    def sample(self):
+        token = self.get_main().sample(ignore=["\\"])
+        for k, chat in enumerate(self.chats):
+            if k == self.cfg.main: continue 
+            chat.insert_token(token)
+        return token
+
+    def insert_text(self, txt:str):
+        tkns = self.get_main().llama.tokenize(' ' + txt)
+        for i in range(1, tkns.n):
+            token = tkns.tokens[i]
+            for chat in self.chats:
+                chat.insert_token(token)
+
+    def process_input(self, echo_main:bool = True, echo_others:bool = False):
+        for k, chat in enumerate(self.chats):
+            is_main = (k == self.cfg.main)
+            echo = echo_main if is_main else echo_others
+            chat.process_input(echo=echo)
+
+    def apply_patch(self):
+        for p in self.cfg.patch:
+            self.chats[p.a].patch_logits(self.chats[p.b], p.w, self.ops.get(p.op, None))

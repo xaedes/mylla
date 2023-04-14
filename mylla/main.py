@@ -2,12 +2,20 @@
 from mylla.llama_chat import *
 
 def main():
+    ops = {'min': min, 'max': max}
     chat = ParallelChat(ParallelChatConfig(
-        main = ChatConfig(prompt_fn='chat-with-bob.txt', llama_cfg=LlamaConfig(model='7b')),
-        others = [
-            PartConfig(w=0.5, cfg=ChatConfig(prompt_fn='chat-with-bob2.txt', llama_cfg=LlamaConfig(model='7b')))
+        chats = [
+            ChatConfig(prompt_fn='chat-with-bob.txt', llama_cfg=LlamaConfig(model='7b')),
+            ChatConfig(prompt_fn='chat-with-bob2.txt', llama_cfg=LlamaConfig(model='7b')),
+        ],
+        patch = [
+            PatchConfig(w=0.5, op='min', a=0, b=1),
+            PatchConfig(w=1/3., op='max', a=0, b=1)
         ]
-    ))
+    ), ops)
+    print(json.dumps(asdict(chat.cfg), indent=4))
+
+    chat.init_from_saved()
 
     n_gen = 128
 
@@ -28,25 +36,13 @@ def main():
                 txt = input()
                 if len(txt) > 0:
                     txt += "\n"
-                    tkns = chat.main.llama.tokenize(' ' + txt)
-                    for i in range(1, tkns.n):
-                        token = tkns.tokens[i]
-                        chat.main.insert_token(token)
-                        for other in chat.others:
-                            other.insert_token(token)
-                    chat.main.process_input(echo=False)
-                    for other in chat.others:
-                        other.process_input(echo=False)
+                    chat.insert_text(txt)
+                    chat.process_input(echo_main=False)
                 is_interacting = False
             else:
-                for cfg,other in zip(chat.cfg.others, chat.others):
-                    chat.main.patch_logits(other, cfg.w, cfg.op)
-                token = chat.main.sample(ignore=["\\"])
-                for other in chat.others:
-                    other.insert_token(token)
-            chat.main.process_input()
-            for other in chat.others:
-                other.process_input(echo=False)
+                chat.apply_patch()
+                chat.sample()
+                chat.process_input()
 
 
 if __name__ == "__main__": main()
